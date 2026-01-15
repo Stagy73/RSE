@@ -86,6 +86,35 @@ def extraire_nom_jockey(val):
         s = s.split("/")[0].strip()
     return s
 
+def analyser_musique(val):
+    """
+    Parse la musique (ex: '1p 3p 5p 2p') et retourne un score
+    1-3 = bon | 4-6 = moyen | 7+ ou 0 = mauvais
+    """
+    if val is None:
+        return 0
+    s = str(val).strip().upper()
+    if s == "" or s == "NAN":
+        return 0
+    
+    # Extraire les 3 dernières positions
+    positions = []
+    parts = s.replace("-", " ").split()[:3]  # 3 dernières courses
+    
+    for char in parts:
+        # Extraire le premier chiffre
+        for c in char:
+            if c.isdigit():
+                positions.append(int(c))
+                break
+    
+    if not positions:
+        return 0
+    
+    # Score : 1-3 = +2, 4-6 = +1, 7+ = 0
+    score = sum(2 if p <= 3 else 1 if p <= 6 else 0 for p in positions)
+    return score
+
 def require_col(colname, label):
     if not colname:
         print(f"❌ Colonne obligatoire introuvable : {label}")
@@ -127,7 +156,7 @@ def choisir_discipline():
     return DISCIPLINES.get(choix)
 
 # ==================================================
-# DOMAINES MÉTIER (SANS COTE)
+# DOMAINES MÉTIER
 # ==================================================
 DOMAINES = {
     "trot":     {"repos_max": 30, "actif_only": True},
@@ -139,15 +168,17 @@ DOMAINES = {
 SEUILS = {
     "SIGMA_MIN": 55.0,
     "IA_RANK_MAX": 5.0,
-    "ELO_MIN": 1400.0
+    "ELO_MIN": 1400.0,
+    "COTE_MIN": 3.0,  # Value si cote >= 3
 }
 
 # ==================================================
-# SCORE RSE (SANS COTE)
+# SCORE RSE (AVEC MUSIQUE)
 # ==================================================
 def calcul_score_rse(row, df_columns):
     """
     Calcule le score RSE en cherchant les colonnes même avec MultiIndex
+    RSE = Repos (0-2) + Actif (0-1) + Musique (0-2) = MAX 5
     """
     score = 0
     
@@ -170,6 +201,16 @@ def calcul_score_rse(row, df_columns):
     
     if actif:
         score += 1
+    
+    # Chercher la colonne Musique
+    musique = None
+    for col in df_columns:
+        if "musiq" in str(col).lower():
+            musique = row.get(col)
+            break
+    
+    score_musique = analyser_musique(musique)
+    score += min(score_musique // 2, 2)  # Max +2 pour la musique (6 pts / 2)
 
     return score
 
@@ -180,7 +221,8 @@ def compter_signaux_ok(c: Cheval):
     return sum([
         c.SIGMA_OK is True,
         c.IA_OK is True,
-        c.ELO_OK is True
+        c.ELO_OK is True,
+        c.VALUE_OK is True  # Maintenant la cote est incluse
     ])
 
 def calcul_confiance(schema):
@@ -188,8 +230,8 @@ def calcul_confiance(schema):
         return 0.0
 
     base, second = schema[0], schema[1]
-    gap = clamp((base.score_RSE - second.score_RSE) / 3)
-    sig = compter_signaux_ok(base) / 3
+    gap = clamp((base.score_RSE - second.score_RSE) / 5)  # Sur 5 maintenant (avec musique)
+    sig = compter_signaux_ok(base) / 4  # Sur 4 signaux maintenant
     size = clamp(1 - (len(schema) - 2) / 8)
 
     conf = 0.45 * gap + 0.35 * sig + 0.20 * size
@@ -252,10 +294,22 @@ def trier_schema(schema):
     )
 
 def selection_ticket(schema, face):
-    face = max(1, min(int(face), len(schema)))
+    """
+    Sélectionne le ticket en fonction de la face du dé
+    ⚠️ CORRIGÉ : ne peut pas retourner plus de chevaux que disponibles
+    """
+    nb_chevaux = len(schema)
+    face = max(1, min(int(face), nb_chevaux))
     return schema[:face]
 
-def face_to_pari(face, conf):
+def face_to_pari(face, conf, nb_disponibles):
+    """
+    Détermine le type de pari en fonction de la face ET du nombre de chevaux disponibles
+    ⚠️ CORRIGÉ : vérifie qu'on a assez de chevaux
+    """
+    # Ajuster la face si pas assez de chevaux
+    face = min(face, nb_disponibles)
+    
     if face == 1:
         return "Simple Gagnant" if conf >= 0.70 else "Simple Placé"
     if face == 2:
@@ -263,10 +317,25 @@ def face_to_pari(face, conf):
     if face == 3:
         return "Trio"
     if face == 4:
-        return "Multi 4"
+        return "Multi 4" if nb_disponibles >= 4 else "Trio"
     if face == 5:
-        return "Multi 5"
-    return "Multi 6"
+        return "Multi 5" if nb_disponibles >= 5 else "Multi 4"
+    return "Multi 6" if nb_disponibles >= 6 else "Multi 5"
+
+def recommander_pari(conf, nb_chevaux):
+    """
+    Recommande le meilleur pari selon la confiance et le nombre de chevaux
+    """
+    if conf >= 0.70:
+        return "✅ RECOMMANDÉ : Simple Gagnant (confiance élevée)"
+    elif conf >= 0.60 and nb_chevaux >= 2:
+        return "✅ RECOMMANDÉ : Couplé Gagnant (confiance bonne)"
+    elif conf >= 0.50 and nb_chevaux >= 3:
+        return "✅ RECOMMANDÉ : Trio (confiance correcte)"
+    elif conf >= 0.40 and nb_chevaux >= 2:
+        return "⚠️ RECOMMANDÉ : Couplé Placé (confiance moyenne, sécurisez)"
+    else:
+        return "❌ RECOMMANDÉ : NO BET (confiance trop faible)"
 
 # ==================================================
 # SÉLECTION FICHIER (AUTO si 1)
@@ -341,10 +410,14 @@ def main():
         if "jockey" in col_low and ("elo" in col_low or "rating" in col_low):
             col_elo_jockey = col
             break
+    
+    # ⭐ COTE : Détection
+    col_cote = detecter_colonne(df, ["COTE", "CoteBZH", "COTE | Unnamed"])
 
     print(f"🧑‍✈️ Colonne JOCKEY : {col_jockey}")
     print(f"🐎 Colonne ELO CHEVAL : {col_elo_cheval}")
     print(f"📈 Colonne ELO JOCKEY : {col_elo_jockey}")
+    print(f"💰 Colonne COTE : {col_cote}")
 
     chevaux = []
 
@@ -354,22 +427,18 @@ def main():
 
         c = Cheval(r.get(col_num), str(r.get(col_nom)).strip())
 
-        # 🔍 DEBUG : vérifier les colonnes critiques
-        repos = to_float(r.get("Repos"))
-        actif = (r.get("Actif") == 1)
+        # 🔍 Chercher Repos et Actif avec le suffixe MultiIndex
+        repos = None
+        for col in df.columns:
+            if "repos" in str(col).lower():
+                repos = to_float(r.get(col))
+                break
         
-        # Chercher aussi avec le suffixe MultiIndex
-        if repos is None:
-            for col in df.columns:
-                if "repos" in str(col).lower():
-                    repos = to_float(r.get(col))
-                    break
-        
-        if not actif:
-            for col in df.columns:
-                if "actif" in str(col).lower():
-                    actif = (r.get(col) == 1)
-                    break
+        actif = False
+        for col in df.columns:
+            if "actif" in str(col).lower():
+                actif = (r.get(col) == 1)
+                break
 
         V = actif if regles["actif_only"] else True
         F = (repos is None) or (repos <= regles["repos_max"])
@@ -377,21 +446,21 @@ def main():
         c.set_domaine(V, F)
         c.set_score_rse(calcul_score_rse(r, df.columns))
 
-        # Chercher SIGMA et IA avec le suffixe MultiIndex
-        sigma = to_float(r.get("SIGMA"))
-        if sigma is None:
-            for col in df.columns:
-                if "sigma" in str(col).lower() and "rating elo" not in str(col).lower():
-                    sigma = to_float(r.get(col))
-                    break
+        # Chercher SIGMA (HORS rating ELO)
+        sigma = None
+        for col in df.columns:
+            col_str = str(col).lower()
+            if "sigma" in col_str and "rating elo" not in col_str and "elo" not in col_str:
+                sigma = to_float(r.get(col))
+                break
         
-        ia = to_float(r.get("PREDICTION IA"))
-        if ia is None:
-            for col in df.columns:
-                col_str = str(col).lower()
-                if "prediction" in col_str and "ia" in col_str and "gagnant" in col_str:
-                    ia = to_float(r.get(col))
-                    break
+        # Chercher PREDICTION IA | Gagnant
+        ia = None
+        for col in df.columns:
+            col_str = str(col).lower()
+            if "prediction" in col_str and "ia" in col_str and "gagnant" in col_str:
+                ia = to_float(r.get(col))
+                break
 
         # Lecture ELO avec gestion robuste
         elo_c = None
@@ -401,22 +470,36 @@ def main():
         elo_j = None
         if col_elo_jockey and col_elo_jockey in r.index:
             elo_j = to_float(r.get(col_elo_jockey))
+        
+        # Lecture COTE
+        cote = None
+        if col_cote and col_cote in r.index:
+            cote = to_float(r.get(col_cote))
 
         c.set_signaux(
             sigma=(sigma is not None and sigma >= SEUILS["SIGMA_MIN"]),
             ia=(ia is not None and ia <= SEUILS["IA_RANK_MAX"]),
             elo=(elo_c is not None and elo_c >= SEUILS["ELO_MIN"]),
-            value=None  # SANS COTE
+            value=(cote is not None and cote >= SEUILS["COTE_MIN"])
         )
 
         jockey = extraire_nom_jockey(r.get(col_jockey)) if col_jockey else None
         c.set_driver(jockey, elo_j)
+        
+        # Stocker musique et cote dans l'objet
+        musique_val = None
+        for col in df.columns:
+            if "musiq" in str(col).lower():
+                musique_val = r.get(col)
+                break
+        c.set_musique(musique_val)
+        c.set_cote(cote)
 
         chevaux.append(c)
 
     schema = trier_schema([c for c in chevaux if c.est_dans_domaine()])
 
-    print("\nANALYSE DOMAINE HIPPIQUE – 1RSE (SANS COTE)")
+    print("\nANALYSE DOMAINE HIPPIQUE – 1RSE (AVEC COTE + MUSIQUE)")
     print("-" * 70)
 
     if len(schema) < 2:
@@ -426,7 +509,7 @@ def main():
     for c in schema:
         print(
             f" - {c.numero} {c.nom} | RSE={c.score_RSE} | "
-            f"OK={compter_signaux_ok(c)}/3 | "
+            f"OK={compter_signaux_ok(c)}/4 | "
             f"JOCKEY={c.driver_nom} ELO_J={c.driver_elo} ({c.driver_niveau})"
         )
 
@@ -436,8 +519,12 @@ def main():
 
     tirages = [tirer_face(conf, disc, rng) for _ in range(5)]
     face_finale = Counter(tirages).most_common(1)[0][0]
+    
+    # Limiter la face au nombre de chevaux disponibles
+    face_finale = min(face_finale, len(schema))
 
     ticket = selection_ticket(schema, face_finale)
+    nb_disponibles = len(schema)
 
     print("\n🎲 SIMULATION 5 TIRAGES (DÉTERMINISTE)")
     print("-" * 70)
@@ -447,9 +534,11 @@ def main():
     print("-" * 70)
     print(f"🥇 BASE : {ticket[0].numero} {ticket[0].nom}")
     print(f"🎟️ Ticket : {[c.numero for c in ticket]}")
-    print(f"✅ Pari : {face_to_pari(face_finale, conf)}")
-    print(f"📊 Confiance : {conf:.2f} | Face finale : {face_finale}")
+    print(f"✅ Pari suggéré : {face_to_pari(face_finale, conf, nb_disponibles)}")
+    print(f"📊 Confiance : {conf:.2f} | Face finale : {face_finale} | Chevaux éligibles : {nb_disponibles}")
     print(f"🔒 Seed : {seed} (mêmes données => mêmes résultats)")
+    print()
+    print(recommander_pari(conf, len(ticket)))
 
 if __name__ == "__main__":
     main()

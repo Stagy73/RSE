@@ -10,6 +10,7 @@ class Cheval:
     - Structure : score_RSE
     - Signaux cheval : SIGMA, IA, ELO, VALUE
     - Jockey : nom + ELO + niveau
+    - Données supplémentaires : musique, cote
     """
 
     def __init__(self, numero, nom):
@@ -33,6 +34,10 @@ class Cheval:
         self.driver_nom = None
         self.driver_elo = None
         self.driver_niveau = "MOYEN"
+        
+        # Données supplémentaires
+        self.musique = None
+        self.cote = None
 
     # -----------------
     # Setters
@@ -62,6 +67,14 @@ class Cheval:
             self.driver_niveau = "MOYEN"
         else:
             self.driver_niveau = "FAIBLE"
+    
+    def set_musique(self, musique_str):
+        """Stocke la musique du cheval (ex: '1p 3p 5p')"""
+        self.musique = musique_str
+    
+    def set_cote(self, cote):
+        """Stocke la cote du cheval"""
+        self.cote = cote
 
     # -----------------
     # Logique
@@ -112,5 +125,7 @@ class Cheval:
             "VALUE_OK": self.VALUE_OK,
             "JOCKEY": self.driver_nom,
             "ELO_JOCKEY": self.driver_elo,
-            "JOCKEY_NIVEAU": self.driver_niveau
+            "JOCKEY_NIVEAU": self.driver_niveau,
+            "musique": self.musique,
+            "cote": self.cote
         }
