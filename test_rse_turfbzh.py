@@ -173,6 +173,61 @@ SEUILS = {
 }
 
 # ==================================================
+# BORDAS PAR HIPPODROME (numéro de corde)
+# ==================================================
+BORDAS = {
+    "vincennes": {
+        # Grosse piste 2700m, avantage modéré pour les petits numéros
+        1: +0.15, 2: +0.12, 3: +0.10, 4: +0.08, 5: +0.05,
+        6: +0.03, 7: +0.02, 8: +0.01, 9: 0.00, 10: -0.02,
+        11: -0.04, 12: -0.06, 13: -0.08, 14: -0.10, 15: -0.12,
+        16: -0.14, 17: -0.16, 18: -0.18
+    },
+    "cagnes": {
+        # Petite piste avec virages serrés, GROS avantage à la corde
+        1: +0.25, 2: +0.20, 3: +0.15, 4: +0.10, 5: +0.05,
+        6: 0.00, 7: -0.03, 8: -0.06, 9: -0.10, 10: -0.13,
+        11: -0.16, 12: -0.20, 13: -0.24, 14: -0.28, 15: -0.32,
+        16: -0.36
+    },
+    "deauville": {
+        # Grande piste, avantage corde moyen
+        1: +0.18, 2: +0.14, 3: +0.11, 4: +0.08, 5: +0.05,
+        6: +0.02, 7: 0.00, 8: -0.02, 9: -0.04, 10: -0.06,
+        11: -0.08, 12: -0.10, 13: -0.12, 14: -0.15, 15: -0.18,
+        16: -0.21, 17: -0.24, 18: -0.27
+    },
+    "pau": {
+        # Obstacle, terrain vallonné, corde moins importante
+        1: +0.08, 2: +0.06, 3: +0.05, 4: +0.04, 5: +0.02,
+        6: +0.01, 7: 0.00, 8: -0.01, 9: -0.02, 10: -0.03,
+        11: -0.04, 12: -0.06, 13: -0.08, 14: -0.10, 15: -0.12,
+        16: -0.14
+    },
+    "chantilly": {
+        # Grande piste de plat, avantage corde modéré
+        1: +0.16, 2: +0.13, 3: +0.10, 4: +0.08, 5: +0.05,
+        6: +0.03, 7: +0.01, 8: 0.00, 9: -0.02, 10: -0.04,
+        11: -0.06, 12: -0.08, 13: -0.10, 14: -0.13, 15: -0.16,
+        16: -0.19, 17: -0.22, 18: -0.25
+    },
+    "cabourg": {
+        # Petite piste balnéaire, avantage corde important
+        1: +0.22, 2: +0.18, 3: +0.14, 4: +0.10, 5: +0.06,
+        6: +0.03, 7: 0.00, 8: -0.03, 9: -0.06, 10: -0.10,
+        11: -0.14, 12: -0.18, 13: -0.22, 14: -0.26, 15: -0.30,
+        16: -0.34
+    },
+    "fontainebleau": {
+        # Piste mixte, avantage corde moyen
+        1: +0.14, 2: +0.11, 3: +0.09, 4: +0.07, 5: +0.04,
+        6: +0.02, 7: 0.00, 8: -0.02, 9: -0.04, 10: -0.06,
+        11: -0.08, 12: -0.10, 13: -0.13, 14: -0.16, 15: -0.19,
+        16: -0.22
+    }
+}
+
+# ==================================================
 # SCORE RSE (AVEC MUSIQUE)
 # ==================================================
 def calcul_score_rse(row, df_columns):
@@ -225,7 +280,10 @@ def compter_signaux_ok(c: Cheval):
         c.VALUE_OK is True  # Maintenant la cote est incluse
     ])
 
-def calcul_confiance(schema):
+def calcul_confiance(schema, hippodrome=None):
+    """
+    Calcule la confiance avec bonus/malus selon la position au départ (bordas)
+    """
     if len(schema) < 2:
         return 0.0
 
@@ -236,6 +294,16 @@ def calcul_confiance(schema):
 
     conf = 0.45 * gap + 0.35 * sig + 0.20 * size
     conf += base.impact_driver()   # ELO jockey via cheval.py
+    
+    # ⭐ BONUS/MALUS BORDAS (position au départ)
+    if hippodrome and hippodrome in BORDAS:
+        bonus_corde = BORDAS[hippodrome].get(base.numero, 0.0)
+        conf += bonus_corde
+        
+        # Afficher l'impact de la corde
+        if bonus_corde != 0:
+            signe = "+" if bonus_corde > 0 else ""
+            print(f"   🎯 Bonus corde #{base.numero} à {hippodrome} : {signe}{bonus_corde:.2f}")
 
     return clamp(conf)
 
@@ -513,7 +581,7 @@ def main():
             f"JOCKEY={c.driver_nom} ELO_J={c.driver_elo} ({c.driver_niveau})"
         )
 
-    conf = calcul_confiance(schema)
+    conf = calcul_confiance(schema, hippo)
     seed = stable_seed(fichier, hippo, disc, schema)
     rng = random.Random(seed)
 
@@ -533,6 +601,15 @@ def main():
     print("\n🎯 VERDICT FINAL")
     print("-" * 70)
     print(f"🥇 BASE : {ticket[0].numero} {ticket[0].nom}")
+    
+    # Afficher l'info corde si hippodrome connu
+    if hippo and hippo in BORDAS:
+        bonus_corde = BORDAS[hippo].get(ticket[0].numero, 0.0)
+        if bonus_corde > 0:
+            print(f"   ✅ Avantage corde #{ticket[0].numero} : +{bonus_corde:.2f}")
+        elif bonus_corde < 0:
+            print(f"   ⚠️ Désavantage corde #{ticket[0].numero} : {bonus_corde:.2f}")
+    
     print(f"🎟️ Ticket : {[c.numero for c in ticket]}")
     print(f"✅ Pari suggéré : {face_to_pari(face_finale, conf, nb_disponibles)}")
     print(f"📊 Confiance : {conf:.2f} | Face finale : {face_finale} | Chevaux éligibles : {nb_disponibles}")
